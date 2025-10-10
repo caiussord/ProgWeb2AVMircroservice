@@ -59,6 +59,32 @@ app.get('/:id', (req, res) => {
   res.json(user);
 });
 
+app.put('/:id', (req, res) => {
+  const { id } = req.params;
+  const existingUser = users.get(id);
+  if (!existingUser) return res.status(404).json({ error: 'not found' });
+
+  const { name, email } = req.body || {};
+  if (!name || !email) return res.status(400).json({ error: 'name and email are required' });
+
+  const updatedUser = { ...existingUser, name, email };
+  users.set(id, updatedUser);
+   
+   // Publish event update
+  try {
+    if (amqp?.ch) {
+      const payload = Buffer.from(JSON.stringify(updatedUser));
+      amqp.ch.publish(EXCHANGE, ROUTING_KEYS.USER_UPDATED, payload, { persistent: true });
+      console.log('[users] published event:', ROUTING_KEYS.USER_UPDATED, updatedUser);
+    }
+  } catch (err) {
+    console.error('[users] publish error:', err.message);
+  }
+
+  res.json(updatedUser);
+});
+
+
 app.listen(PORT, () => {
   console.log(`[users] listening on http://localhost:${PORT}`);
 });
