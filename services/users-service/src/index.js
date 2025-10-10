@@ -1,10 +1,11 @@
 import express from 'express';
 import morgan from 'morgan';
-import { nanoid } from 'nanoid';
+import { PrismaClient } from '@prisma/client'; 
 import { createChannel } from './amqp.js';
 import { ROUTING_KEYS } from '../common/events.js';
 
 const app = express();
+const prisma = new PrismaClient();
 app.use(express.json());
 app.use(morgan('dev'));
 
@@ -12,8 +13,6 @@ const PORT = process.env.PORT || 3001;
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost:5672';
 const EXCHANGE = process.env.EXCHANGE || 'app.topic';
 
-// In-memory "DB"
-const users = new Map();
 
 let amqp = null;
 (async () => {
@@ -35,9 +34,10 @@ app.post('/', async (req, res) => {
   const { name, email } = req.body || {};
   if (!name || !email) return res.status(400).json({ error: 'name and email are required' });
 
-  const id = `u_${nanoid(6)}`;
-  const user = { id, name, email, createdAt: new Date().toISOString() };
-  users.set(id, user);
+  try {
+    const user = await prisma.user.create({
+      data: { name, email },
+    });
 
   // Publish event
   try {
@@ -51,24 +51,33 @@ app.post('/', async (req, res) => {
   }
 
   res.status(201).json(user);
+}catch (error) {
+    // erro de e-mail duplicado
+    if (error.code === 'P2002') {
+      return res.status(409).json({ error: 'email already exists' });
+    }
+    res.status(500).json({ error: 'something went wrong' });
+  }
 });
 
-app.get('/:id', (req, res) => {
-  const user = users.get(req.params.id);
+app.get('/:id', async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.params.id },
+  });
   if (!user) return res.status(404).json({ error: 'not found' });
   res.json(user);
 });
 
-app.put('/:id', (req, res) => {
-  const { id } = req.params;
-  const existingUser = users.get(id);
-  if (!existingUser) return res.status(404).json({ error: 'not found' });
-
+app.put('/:id', async (req, res) => {
   const { name, email } = req.body || {};
   if (!name || !email) return res.status(400).json({ error: 'name and email are required' });
 
-  const updatedUser = { ...existingUser, name, email };
-  users.set(id, updatedUser);
+  try {
+    const updatedUser = await prisma.user.update({
+      where: { id: req.params.id },
+      data: { name, email },
+    });
+
    
    // Publish event update
   try {
@@ -82,6 +91,10 @@ app.put('/:id', (req, res) => {
   }
 
   res.json(updatedUser);
+} catch (error) {
+    // erro de utilizador não encontrado ou e-mail duplicado
+    res.status(404).json({ error: 'user not found or invalid data' });
+  }
 });
 
 
