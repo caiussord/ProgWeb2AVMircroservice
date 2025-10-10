@@ -102,6 +102,33 @@ app.post('/', async (req, res) => {
   res.status(201).json(order);
 });
 
+//Order cancel
+app.patch('/:id/cancel', (req, res) => {
+  const { id } = req.params;
+  const order = orders.get(id);
+
+  if (!order) {
+    return res.status(404).json({ error: 'order not found' });
+  }
+
+  const cancelledOrder = { ...order, status: 'cancelled' };
+  orders.set(id, cancelledOrder);
+
+  // Publish event order
+  try {
+    if (amqp?.ch) {
+      const payload = Buffer.from(JSON.stringify(cancelledOrder));
+      amqp.ch.publish(EXCHANGE, ROUTING_KEYS.ORDER_CANCELLED, payload, { persistent: true });
+      console.log('[orders] published event:', ROUTING_KEYS.ORDER_CANCELLED, cancelledOrder.id);
+    }
+  } catch (err) {
+    console.error('[orders] publish error:', err.message);
+  }
+
+  res.json(cancelledOrder);
+});
+
+
 app.listen(PORT, () => {
   console.log(`[orders] listening on http://localhost:${PORT}`);
   console.log(`[orders] users base url: ${USERS_BASE_URL}`);
