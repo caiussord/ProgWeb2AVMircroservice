@@ -1,12 +1,13 @@
 import express from 'express';
 import morgan from 'morgan';
 import fetch from 'node-fetch';
-import { nanoid } from 'nanoid';
+import { PrismaClient } from '@prisma/client';
 import { createChannel } from './amqp.js';
 import { ROUTING_KEYS } from '../common/events.js';
 
 const app = express();
 app.use(express.json());
+const prisma = new PrismaClient();
 app.use(morgan('dev'));
 
 const PORT = process.env.PORT || 3002;
@@ -17,10 +18,7 @@ const EXCHANGE = process.env.EXCHANGE || 'app.topic';
 const QUEUE = process.env.QUEUE || 'orders.q';
 const ROUTING_KEY_USER_CREATED = process.env.ROUTING_KEY_USER_CREATED || ROUTING_KEYS.USER_CREATED;
 
-// In-memory "DB"
-const orders = new Map();
-// In-memory cache de usuários (preenchido por eventos)
-const userCache = new Map();
+
 
 let amqp = null;
 (async () => {
@@ -52,9 +50,15 @@ let amqp = null;
 
 app.get('/health', (req, res) => res.json({ ok: true, service: 'orders' }));
 
-app.get('/', (req, res) => {
-  res.json(Array.from(orders.values()));
+app.get('/', async (req, res) => {
+  const ordersFromDb = await prisma.order.findMany();
+  const orders = ordersFromDb.map(order => ({
+    ...order,
+    items: JSON.parse(order.items),
+  }));
+  res.json(orders);
 });
+
 
 async function fetchWithTimeout(url, ms) {
   const controller = new AbortController();
@@ -70,9 +74,14 @@ async function fetchWithTimeout(url, ms) {
 app.post('/', async (req, res) => {
   const { userId, items, total } = req.body || {};
   if (!userId || !Array.isArray(items) || typeof total !== 'number') {
-    return res.status(400).json({ error: 'userId, items[], total<number> são obrigatórios' });
+  const order = await prisma.order.create({
+    data: {
+      userId,
+      items, //Itens -> Json
+      total,
+    },
+  }); return res.status(400).json({ error: 'userId, items[], total<number> são obrigatórios' });
   }
-
   // 1) Validação síncrona (HTTP) no Users Service
   try {
     const resp = await fetchWithTimeout(`${USERS_BASE_URL}/${userId}`, HTTP_TIMEOUT_MS);
@@ -85,9 +94,19 @@ app.post('/', async (req, res) => {
     }
   }
 
-  const id = `o_${nanoid(6)}`;
-  const order = { id, userId, items, total, status: 'created', createdAt: new Date().toISOString() };
-  orders.set(id, order);
+    const orderData = await prisma.order.create({
+    data: {
+      userId,
+      items: JSON.stringify(items), //String -> Json
+      total,
+    },
+  });
+
+  const order = {
+    ...orderData,
+    items: JSON.parse(orderData.items), // Conversao para resposta cliente
+  };
+
 
   // (Opcional) publicar evento order.created
   try {
@@ -103,16 +122,18 @@ app.post('/', async (req, res) => {
 });
 
 //Order cancel
-app.patch('/:id/cancel', (req, res) => {
-  const { id } = req.params;
-  const order = orders.get(id);
+app.patch('/:id/cancel', async (req, res) => {
+  try {
+    const cancelledOrderData = await prisma.order.update({
+      where: { id: req.params.id },
+      data: { status: 'cancelled' },
+    });
 
-  if (!order) {
-    return res.status(404).json({ error: 'order not found' });
-  }
+    const cancelledOrder = {
+        ...cancelledOrderData,
+        items: JSON.parse(cancelledOrderData.items) // Conversao para resposta cliente
+    };
 
-  const cancelledOrder = { ...order, status: 'cancelled' };
-  orders.set(id, cancelledOrder);
 
   // Publish event order
   try {
@@ -124,12 +145,13 @@ app.patch('/:id/cancel', (req, res) => {
   } catch (err) {
     console.error('[orders] publish error:', err.message);
   }
-
   res.json(cancelledOrder);
+  } catch (error) {
+    res.status(404).json({ error: 'order not found' });
+  }
 });
 
 
 app.listen(PORT, () => {
   console.log(`[orders] listening on http://localhost:${PORT}`);
-  console.log(`[orders] users base url: ${USERS_BASE_URL}`);
 });

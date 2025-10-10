@@ -4,12 +4,16 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "prisma:migrate": "prisma migrate dev"
   },
   "dependencies": {
+    "@prisma/client": "^5.17.0",
     "amqplib": "^0.10.4",
     "express": "^4.19.2",
-    "morgan": "^1.10.0",
-    "nanoid": "^5.0.7"
+    "morgan": "^1.10.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.17.0"
   }
 }
