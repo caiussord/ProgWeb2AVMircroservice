@@ -1,0 +1,6 @@
+{
+  "name": "microservices-node-lesson",
+  "private": true,
+  "type": "module",
+  "workspaces": []
+}

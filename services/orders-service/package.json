@@ -4,13 +4,30 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "prisma:migrate": "prisma migrate dev",
+  "test": "cross-env NODE_ENV=test NODE_OPTIONS=--experimental-vm-modules jest --runInBand"
   },
   "dependencies": {
+    "@prisma/client": "^5.17.0",
     "amqplib": "^0.10.4",
     "express": "^4.19.2",
     "morgan": "^1.10.0",
-    "node-fetch": "^3.3.2",
-    "nanoid": "^5.0.7"
+    "nanoid": "^5.0.7",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "prisma": "^5.17.0",
+    "cross-env": "^7.0.3",
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "transform": {},
+    "roots": [
+      "<rootDir>/src",
+      "<rootDir>/tests"
+    ]
   }
 }

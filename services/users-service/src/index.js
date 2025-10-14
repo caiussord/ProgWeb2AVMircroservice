@@ -1,10 +1,11 @@
 import express from 'express';
 import morgan from 'morgan';
-import { nanoid } from 'nanoid';
+import { PrismaClient } from '@prisma/client';
 import { createChannel } from './amqp.js';
-import { ROUTING_KEYS } from '../common/events.js';
+import { ROUTING_KEYS } from '../../../common/events.js';
 
 const app = express();
+const prisma = new PrismaClient();
 app.use(express.json());
 app.use(morgan('dev'));
 
@@ -12,32 +13,34 @@ const PORT = process.env.PORT || 3001;
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost:5672';
 const EXCHANGE = process.env.EXCHANGE || 'app.topic';
 
-// In-memory "DB"
-const users = new Map();
 
 let amqp = null;
-(async () => {
-  try {
-    amqp = await createChannel(RABBITMQ_URL, EXCHANGE);
-    console.log('[users] AMQP connected');
-  } catch (err) {
-    console.error('[users] AMQP connection failed:', err.message);
-  }
-})();
+if (process.env.NODE_ENV !== 'test') {
+  (async () => {
+    try {
+      amqp = await createChannel(RABBITMQ_URL, EXCHANGE);
+      console.log('[users] AMQP connected');
+    } catch (err) {
+      console.error('[users] AMQP connection failed:', err.message);
+    }
+  })();
+}
 
 app.get('/health', (req, res) => res.json({ ok: true, service: 'users' }));
 
-app.get('/', (req, res) => {
-  res.json(Array.from(users.values()));
+app.get('/', async (req, res) => {
+  const users = await prisma.user.findMany();
+  res.json(users);
 });
 
 app.post('/', async (req, res) => {
   const { name, email } = req.body || {};
   if (!name || !email) return res.status(400).json({ error: 'name and email are required' });
 
-  const id = `u_${nanoid(6)}`;
-  const user = { id, name, email, createdAt: new Date().toISOString() };
-  users.set(id, user);
+  try {
+    const user = await prisma.user.create({
+      data: { name, email },
+    });
 
   // Publish event
   try {
@@ -51,14 +54,57 @@ app.post('/', async (req, res) => {
   }
 
   res.status(201).json(user);
+}catch (error) {
+    // erro de e-mail duplicado
+    if (error.code === 'P2002') {
+      return res.status(409).json({ error: 'email already exists' });
+    }
+    res.status(500).json({ error: 'something went wrong' });
+  }
 });
 
-app.get('/:id', (req, res) => {
-  const user = users.get(req.params.id);
+app.get('/:id', async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.params.id },
+  });
   if (!user) return res.status(404).json({ error: 'not found' });
   res.json(user);
 });
 
-app.listen(PORT, () => {
-  console.log(`[users] listening on http://localhost:${PORT}`);
+app.put('/:id', async (req, res) => {
+  const { name, email } = req.body || {};
+  if (!name || !email) return res.status(400).json({ error: 'name and email are required' });
+
+  try {
+    const updatedUser = await prisma.user.update({
+      where: { id: req.params.id },
+      data: { name, email },
+    });
+
+   
+   // Publish event update
+  try {
+    if (amqp?.ch) {
+      const payload = Buffer.from(JSON.stringify(updatedUser));
+      amqp.ch.publish(EXCHANGE, ROUTING_KEYS.USER_UPDATED, payload, { persistent: true });
+      console.log('[users] published event:', ROUTING_KEYS.USER_UPDATED, updatedUser);
+    }
+  } catch (err) {
+    console.error('[users] publish error:', err.message);
+  }
+
+  res.json(updatedUser);
+} catch (error) {
+    // erro de utilizador não encontrado ou e-mail duplicado
+    res.status(404).json({ error: 'user not found or invalid data' });
+  }
 });
+
+
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`[users] listening on http://localhost:${PORT}`);
+  });
+}
+
+export { app, prisma };
