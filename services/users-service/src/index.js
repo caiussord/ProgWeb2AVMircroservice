@@ -1,10 +1,10 @@
 import express from 'express';
 import morgan from 'morgan';
-import { PrismaClient } from '@prisma/client'; 
+import { PrismaClient } from '@prisma/client';
 import { createChannel } from './amqp.js';
-import { ROUTING_KEYS } from '../common/events.js';
+import { ROUTING_KEYS } from '../../../common/events.js';
 
-const app = express();
+export const app = express();
 const prisma = new PrismaClient();
 app.use(express.json());
 app.use(morgan('dev'));
@@ -15,19 +15,22 @@ const EXCHANGE = process.env.EXCHANGE || 'app.topic';
 
 
 let amqp = null;
-(async () => {
-  try {
-    amqp = await createChannel(RABBITMQ_URL, EXCHANGE);
-    console.log('[users] AMQP connected');
-  } catch (err) {
-    console.error('[users] AMQP connection failed:', err.message);
-  }
-})();
+if (!process.env.JEST_WORKER_ID) {
+  (async () => {
+    try {
+      amqp = await createChannel(RABBITMQ_URL, EXCHANGE);
+      console.log('[users] AMQP connected');
+    } catch (err) {
+      console.error('[users] AMQP connection failed:', err.message);
+    }
+  })();
+}
 
 app.get('/health', (req, res) => res.json({ ok: true, service: 'users' }));
 
-app.get('/', (req, res) => {
-  res.json(Array.from(users.values()));
+app.get('/', async (req, res) => {
+  const users = await prisma.user.findMany();
+  res.json(users);
 });
 
 app.post('/', async (req, res) => {
@@ -98,6 +101,8 @@ app.put('/:id', async (req, res) => {
 });
 
 
-app.listen(PORT, () => {
-  console.log(`[users] listening on http://localhost:${PORT}`);
-});
+if (!process.env.JEST_WORKER_ID && process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`[users] listening on http://localhost:${PORT}`);
+  });
+}
