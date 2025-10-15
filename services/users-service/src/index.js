@@ -2,7 +2,7 @@ import express from 'express';
 import morgan from 'morgan';
 import { PrismaClient } from '@prisma/client';
 import { createChannel } from './amqp.js';
-import { ROUTING_KEYS } from '../../../common/events.js';
+import { ROUTING_KEYS } from '../common/events.js';
 
 export const app = express();
 const prisma = new PrismaClient();
@@ -57,7 +57,7 @@ app.post('/', async (req, res) => {
 }catch (error) {
     // erro de e-mail duplicado
     if (error.code === 'P2002') {
-      return res.status(409).json({ error: 'email already exists' });
+      return res.status(409).json({ error: 'email ja existe' });
     }
     res.status(500).json({ error: 'something went wrong' });
   }
