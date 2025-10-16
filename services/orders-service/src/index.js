@@ -2,6 +2,7 @@ import express from 'express';
 import morgan from 'morgan';
 import retry from 'async-retry';
 import fetch from 'node-fetch';
+import CircuitBreaker from 'opossum';
 import { PrismaClient } from '@prisma/client';
 import { createChannel } from './amqp.js';
 import { ROUTING_KEYS } from '../common/events.js';
@@ -20,6 +21,29 @@ const QUEUE = process.env.QUEUE || 'orders.q';
 const ROUTING_KEY_USER_CREATED = process.env.ROUTING_KEY_USER_CREATED || ROUTING_KEYS.USER_CREATED;
 
 const userCache = new Map();
+
+const circuitBreakerOptions = {
+  timeout: 3000, // 3 segundo pra timeout
+  errorThresholdPercentage: 50, // Caso metade das requisições falhem ira abirir o circuito
+  resetTimeout: 30000 // 30 pra tentativa de fechar o circuito
+};
+
+// vai assegurar que a função fetchWithTimeout é definida antes de ser usada
+const breaker = new CircuitBreaker(async (userId) => {
+  return fetchWithTimeout(`${USERS_BASE_URL}/${userId}`, HTTP_TIMEOUT_MS);
+}, circuitBreakerOptions);
+
+// Fallback para CB
+// Circuito aberto -> usar cache
+breaker.fallback(async (userId) => {
+  console.warn('[CircuitBreaker] Circuito aberto. Fallback para cache de utilizadores.');
+  if (userCache.has(userId)) {
+    // Simulação de resposta HTTP
+    return { ok: true, status: 200, fromCache: true };
+  }
+  // Se não estiver no cache, simula falha
+  throw new Error('Serviço de utilizadores indisponível e utilizador não encontrado no cache');
+});
 
 let amqp = null;
 if (!process.env.JEST_WORKER_ID) {
