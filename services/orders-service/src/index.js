@@ -3,6 +3,8 @@ import morgan from 'morgan';
 import retry from 'async-retry';
 import fetch from 'node-fetch';
 import CircuitBreaker from 'opossum';
+import swaggerUi from 'swagger-ui-express';
+import swaggerJsdoc from 'swagger-jsdoc';
 import { PrismaClient } from '@prisma/client';
 import { createChannel } from './amqp.js';
 import { ROUTING_KEYS } from '../common/events.js';
@@ -10,7 +12,54 @@ import { ROUTING_KEYS } from '../common/events.js';
 export const app = express();
 app.use(express.json());
 const prisma = new PrismaClient();
-app.use(morgan('dev'))
+app.use(morgan('dev'));
+
+const swaggerOptions = {
+    definition: {
+        openapi: '3.0.0',
+        info: {
+            title: 'Orders Service API',
+            version: '1.0.0',
+            description: 'API para gestão de pedidos',
+        },
+    components: {
+      schemas: {
+        OrderItem: {
+          type: 'object',
+          properties: {
+            sku: { type: 'string', example: 'BOOK-123' },
+            qty: { type: 'integer', example: 2 },
+          }
+        },
+        OrderInput: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string' },
+            items: { type: 'array', items: { $ref: '#/components/schemas/OrderItem' } },
+            total: { type: 'number', example: 120.50 },
+          },
+          required: ['userId', 'items', 'total']
+        },
+        Order: {
+          allOf: [
+            {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                status: { type: 'string', example: 'created' },
+                createdAt: { type: 'string', format: 'date-time' },
+              },
+            },
+            { $ref: '#/components/schemas/OrderInput' },
+          ],
+        },
+      },
+    },
+    },
+    apis: ['./src/index.js'],
+};
+const swaggerDocs = swaggerJsdoc(swaggerOptions);
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 
 const PORT = process.env.PORT || 3002;
 const USERS_BASE_URL = process.env.USERS_BASE_URL || 'http://localhost:3001';
@@ -75,8 +124,6 @@ if (!process.env.JEST_WORKER_ID) {
   })();
 }
 
-app.get('/health', (req, res) => res.json({ ok: true, service: 'orders' }));
-
 export async function getOrders(req, res) {
   const ordersFromDb = await prisma.order.findMany();
   const orders = ordersFromDb.map(order => ({
@@ -91,16 +138,14 @@ export async function createOrder(req, res) {
   if (!userId || !Array.isArray(items) || typeof total !== 'number') {
     return res.status(400).json({ error: 'userId, items[], total<number> são obrigatórios' });
   }
-  // 1) Validação síncrona (HTTP) no Users Service
+
   try {
-    const resp = await fetchWithTimeout(`${USERS_BASE_URL}/${userId}`, HTTP_TIMEOUT_MS);
+    // Usa o breaker em vez da chamada direta
+    const resp = await breaker.fire(userId);
     if (!resp.ok) return res.status(400).json({ error: 'usuário inválido' });
   } catch (err) {
-    console.warn('[orders] users-service timeout/failure, tentando cache...', err.message);
-    // fallback: usar cache populado por eventos (assíncrono)
-    if (!userCache.has(userId)) {
-      return res.status(503).json({ error: 'users-service indisponível e usuário não encontrado no cache' });
-    }
+    console.error('[createOrder] Erro ao validar utilizador:', err.message);
+    return res.status(503).json({ error: err.message });
   }
 
   const orderData = await prisma.order.create({
@@ -165,39 +210,76 @@ export async function cancelOrder(req, res) {
 
 async function fetchWithTimeout(url, ms) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ms);
-
+  const id = setTimeout(() => controller.abort(), ms);
   try {
-    return await retry(async (bail, attempt) => {
-      console.log(`[HTTP] Tentativa ${attempt} de chamar: ${url}`);
-      const res = await fetch(url, { signal: controller.signal });
-
-      if (res.status >= 400 && res.status < 500) {
-        bail(new Error(`Erro do cliente, não haverá nova tentativa: ${res.status}`));
-        return res;
-      }
-
-      if (!res.ok) {
-        throw new Error(`Serviço indisponível: ${res.status}`);
-      }
-
-      return res;
-    }, {
-      retries: 3,      //3 tentativas
-      factor: 2,
-      minTimeout: 200,   
-      onRetry: (error, attempt) => {
-        console.warn(`[HTTP] Falha na tentativa ${attempt}. Erro: ${error.message}. Tentando novamente...`);
-      }
-    });
+    const res = await fetch(url, { signal: controller.signal });
+    return res;
   } finally {
-    clearTimeout(timeoutId);
+    clearTimeout(id);
   }
 }
 
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: Get all 
+ *     responses:
+ *       '200':
+ *         description: Lista pedidos.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/Order'
+ *   post:
+ *     summary: Novo pedido.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/OrderInput'
+ *     responses:
+ *       '201':
+ *         description: Pedido criado com sucesso.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Order'
+ *       '400':
+ *         description: Dados inválidos ou user inválido.
+ *       '503':
+ *         description: Serviço de user indisponível.
+ */
 app.get('/', getOrders);
 app.post('/', createOrder);
+
+/**
+ * @swagger
+ * /{id}/cancel:
+ *   patch:
+ *     summary: Cancelamento de pedido
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: O ID do pedido a ser cancelado
+ *     responses:
+ *       '200':
+ *         description: Pedido cancelado com sucesso.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Order'
+ *       '404':
+ *         description: Pedido não encontrado.
+ */
 app.patch('/:id/cancel', cancelOrder);
+
 
 if (!process.env.JEST_WORKER_ID && process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
