@@ -10,7 +10,7 @@ COPY services/orders-service/prisma ./prisma
 RUN npx prisma generate
 
 COPY services/orders-service/src ./src
-COPY common ./common
+COPY common /common
 
 ENV PORT=3002
 EXPOSE 3002

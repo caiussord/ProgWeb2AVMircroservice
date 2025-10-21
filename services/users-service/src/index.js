@@ -4,7 +4,7 @@ import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
 import { PrismaClient } from '@prisma/client';
 import { createChannel } from './amqp.js';
-import { ROUTING_KEYS } from '../common/events.js';
+import { ROUTING_KEYS } from '../../../common/events.js';
 
 export const app = express();
 const prisma = new PrismaClient();
